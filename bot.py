@@ -14,6 +14,7 @@ from aiogram.enums import ParseMode
 
 from app.bot.main_router import router as main_router, init_ai_predictor
 from app.bot.premium_router import router as premium_router
+from app.bot.admin_router import router as admin_router
 from app.config import config
 from app.db.base import init_db
 from app.services.scheduler import SignalScheduler
