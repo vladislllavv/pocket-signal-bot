@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Pocket Signal Bot — Точка входа для Railway.
-Автоматическая рассылка сигналов каждые 3 минуты.
+Pocket Signal Bot — Точка входа.
+Автоматический мониторинг сигналов каждые 3 минуты.
 """
 
 import asyncio
@@ -20,25 +20,33 @@ from app.bot.admin_router import router as admin_router
 from app.config import config
 from app.db.base import init_db, async_session_factory
 from app.db.models import User, Signal
-from app.services.scheduler import SignalScheduler
 from app.services.user_service import UserService
 from app.utils.logger import setup_logging
 
 setup_logging()
 logger = logging.getLogger(__name__)
 
+# Глобальная ссылка на бота (чтобы использовать в авто-цикле)
+_bot_instance = None
+
 
 async def auto_signal_cycle():
     """
     Автоматический цикл генерации и рассылки сигналов.
-    Запускается каждые 3 минуты.
-    Использует Yahoo Finance для реальных данных.
+    Проверяет рынки каждые 3 минуты и отправляет сигналы в Telegram.
     """
+    global _bot_instance
+    
     await asyncio.sleep(30)  # ждём 30 сек после старта бота
     logger.info("🔄 Авто-цикл сигналов запущен (каждые 3 мин)")
 
     while True:
         try:
+            if _bot_instance is None:
+                logger.warning("Бот ещё не инициализирован, ждём...")
+                await asyncio.sleep(30)
+                continue
+
             from app.analytics.analyzer import SignalAnalyzer
             from app.data.market_data import MarketDataAggregator, DEFAULT_ASSETS
             from app.bot.messages import format_signal_message
@@ -67,20 +75,15 @@ async def auto_signal_cycle():
                     if not signal_result.is_valid:
                         continue
 
-                    # Рассылаем сигнал всем пользователям
+                    # Рассылаем сигнал всем пользователям через ОДНОГО бота
                     for user in users:
                         try:
                             svc = UserService(session)
                             if not await svc.check_signal_limit(user):
                                 continue
 
-                            # Отправляем сообщение
-                            bot_temp = Bot(
-                                token=config.BOT_TOKEN,
-                                default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-                            )
                             msg = format_signal_message(signal_result)
-                            await bot_temp.send_message(
+                            await _bot_instance.send_message(
                                 chat_id=user.telegram_id,
                                 text=msg,
                                 parse_mode="HTML",
@@ -88,7 +91,6 @@ async def auto_signal_cycle():
                                     asset, signal_result.direction, signal_result.expiry
                                 ),
                             )
-                            await bot_temp.session.close()
 
                             # Сохраняем сигнал в БД
                             db_signal = Signal(
@@ -112,8 +114,6 @@ async def auto_signal_cycle():
 
             if signals_sent:
                 logger.info("✅ Авто-цикл: отправлено %d сигналов", signals_sent)
-            else:
-                logger.debug("Авто-цикл: нет сигналов в этом цикле")
 
             await aggregator.close()
 
@@ -125,6 +125,8 @@ async def auto_signal_cycle():
 
 async def main() -> None:
     """Главная функция запуска."""
+    global _bot_instance
+    
     logger.info("=" * 54)
     logger.info("  Pocket Signal Bot — ЗАПУСК")
     logger.info("=" * 54)
@@ -148,7 +150,7 @@ async def main() -> None:
         logger.warning("AI не загружен (продолжаем): %s", exc)
 
     # Telegram Bot
-    bot = Bot(
+    _bot_instance = Bot(
         token=config.BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
@@ -159,25 +161,21 @@ async def main() -> None:
     dp.include_router(admin_router)
     logger.info("Роутеры подключены")
 
-    # Планировщик
-    scheduler = SignalScheduler()
-    scheduler.start()
-    logger.info("Планировщик запущен")
-
     # Удаляем вебхук
-    await bot.delete_webhook(drop_pending_updates=True)
+    await _bot_instance.delete_webhook(drop_pending_updates=True)
 
-    # Запускаем авто-цикл сигналов в фоне
+    # Запускаем авто-цикл сигналов в фоне (каждые 3 минуты)
     asyncio.create_task(auto_signal_cycle())
 
     logger.info("=" * 54)
-    logger.info("  🚀 Бот запущен! Иди в Telegram и пиши /start")
-    logger.info("  📡 Авто-сигналы каждые 3 минуты")
+    logger.info("  🚀 Бот запущен!")
+    logger.info("  📡 Авто-мониторинг сигналов: каждые 3 минуты")
+    logger.info("  🔔 Сигналы приходят автоматически в Telegram")
     logger.info("=" * 54)
 
     try:
         await dp.start_polling(
-            bot,
+            _bot_instance,
             allowed_updates=[
                 "message", "callback_query",
                 "pre_checkout_query", "successful_payment",
@@ -189,9 +187,8 @@ async def main() -> None:
     except Exception as exc:
         logger.exception("Ошибка: %s", exc)
     finally:
-        scheduler.stop()
-        await bot.session.close()
-        logger.info("Бот остановлен. До встречи!")
+        await _bot_instance.session.close()
+        logger.info("Бот остановлен.")
 
 
 if __name__ == "__main__":
