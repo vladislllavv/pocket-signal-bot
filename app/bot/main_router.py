@@ -36,13 +36,12 @@ from app.bot.messages import (
 )
 from app.bot.statistics_charts import (
     pnl_chart,
-    signals_by_day_chart,
     win_loss_chart,
     win_rate_gauge,
 )
 from app.config import config
 from app.data.market_data import DEFAULT_ASSETS, MarketDataAggregator
-from app.db.base import get_session
+from app.db.base import async_session_factory
 from app.db.models import Signal, TradeLog, User
 from app.services.user_service import UserService
 
@@ -97,7 +96,7 @@ async def _register_and_welcome(
     last_name = message.from_user.last_name
 
     try:
-        async with get_session() as session:
+        async with async_session_factory() as session:
             service = UserService(session)
             user = await service.get_or_create(
                 telegram_id=tg_id,
@@ -137,7 +136,7 @@ async def _register_and_welcome(
 async def back_to_main(callback: CallbackQuery) -> None:
     tg_id = callback.from_user.id
     try:
-        async with get_session() as session:
+        async with async_session_factory() as session:
             service = UserService(session)
             user = await service.get_by_telegram_id(tg_id)
             is_premium = user.is_premium if user else False
@@ -155,7 +154,7 @@ async def back_to_main(callback: CallbackQuery) -> None:
 async def show_menu(message: Message) -> None:
     tg_id = message.from_user.id
     try:
-        async with get_session() as session:
+        async with async_session_factory() as session:
             service = UserService(session)
             user = await service.get_by_telegram_id(tg_id)
             is_premium = user.is_premium if user else False
@@ -177,7 +176,7 @@ async def market_analysis(callback: CallbackQuery) -> None:
     tg_id = callback.from_user.id
 
     # Проверка лимитов
-    async with get_session() as session:
+    async with async_session_factory() as session:
         service = UserService(session)
         user = await service.get_by_telegram_id(tg_id)
         if not user:
@@ -225,10 +224,8 @@ async def market_analysis(callback: CallbackQuery) -> None:
                     result.confidence = min(1.0, result.confidence * ai_mult)
                     ai_dir = ai_predictor.get_ai_direction(result.indicators)
                     if ai_dir and ai_dir != result.direction:
-                        # AI против — снижаем уверенность
                         result.confidence *= 0.7
                     elif ai_dir == result.direction:
-                        # AI за — повышаем
                         result.confidence = min(1.0, result.confidence * 1.1)
                 except Exception:
                     pass
@@ -261,7 +258,7 @@ async def market_analysis(callback: CallbackQuery) -> None:
             )
 
             # Сохраняем сигналы в БД
-            async with get_session() as session:
+            async with async_session_factory() as session:
                 svc = UserService(session)
                 for sig in sent_signals:
                     db_signal = Signal(
@@ -303,7 +300,7 @@ async def market_analysis(callback: CallbackQuery) -> None:
 async def active_signals(callback: CallbackQuery) -> None:
     tg_id = callback.from_user.id
 
-    async with get_session() as session:
+    async with async_session_factory() as session:
         from sqlalchemy import select
         service = UserService(session)
         user = await service.get_by_telegram_id(tg_id)
@@ -367,14 +364,13 @@ async def active_signals(callback: CallbackQuery) -> None:
 async def my_statistics(callback: CallbackQuery) -> None:
     tg_id = callback.from_user.id
 
-    async with get_session() as session:
+    async with async_session_factory() as session:
         service = UserService(session)
         stats = await service.get_statistics(tg_id)
         if stats is None:
             await callback.answer("Пользователь не найден", show_alert=True)
             return
 
-        # Текстовый блок
         role_emoji = "💎" if stats["is_premium"] else "🆓"
         role_label = "Premium" if stats["is_premium"] else "Free"
         premium_until = (
@@ -392,30 +388,26 @@ async def my_statistics(callback: CallbackQuery) -> None:
             premium_until=premium_until,
         )
 
-    # Отправляем текст
     await callback.message.edit_text(
         text_stats, parse_mode=ParseMode.HTML,
     )
 
-    # Отправляем графики (vip-функция для Premium)
+    # Графики только для Premium
     if stats["is_premium"] and stats["total_signals"] > 0:
         try:
-            # Pie chart
             pie = win_loss_chart(stats["wins"], stats["losses"], stats["pending"])
             await callback.message.answer_photo(
                 BufferedInputFile(pie.read(), filename="winloss.png"),
-                caption="📊 Соотношение сделок",
+                caption="Соотношение сделок",
             )
 
-            # Win rate gauge
             gauge = win_rate_gauge(stats["win_rate"])
             await callback.message.answer_photo(
                 BufferedInputFile(gauge.read(), filename="winrate.png"),
-                caption="🎯 Процент успешных сделок",
+                caption="Процент успешных сделок",
             )
 
-            # PnL chart (если есть сделки)
-            async with get_session() as session:
+            async with async_session_factory() as session:
                 from sqlalchemy import select
                 user_db = await service.get_by_telegram_id(tg_id)
                 if user_db:
@@ -432,14 +424,14 @@ async def my_statistics(callback: CallbackQuery) -> None:
                         ])
                         await callback.message.answer_photo(
                             BufferedInputFile(pnl.read(), filename="pnl.png"),
-                            caption="💰 Кривая доходности",
+                            caption="Кривая доходности",
                         )
 
         except Exception as exc:
             logger.warning("Ошибка генерации графиков: %s", exc)
 
     await callback.message.answer(
-        "📊 Статистика загружена.",
+        "Статистика загружена.",
         reply_markup=main_menu_kb(is_premium=stats["is_premium"]),
     )
     await callback.answer()
@@ -460,14 +452,14 @@ async def premium_info_handler(callback: CallbackQuery) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 💎 VIP Аналитика (расширенные графики + AI)
+# 💎 VIP Аналитика
 # ═══════════════════════════════════════════════════════════════════════
 
 @router.callback_query(F.data == "vip_analysis")
 async def vip_analysis_handler(callback: CallbackQuery) -> None:
     tg_id = callback.from_user.id
 
-    async with get_session() as session:
+    async with async_session_factory() as session:
         service = UserService(session)
         user = await service.get_by_telegram_id(tg_id)
 
@@ -486,7 +478,6 @@ async def vip_analysis_handler(callback: CallbackQuery) -> None:
             await callback.answer()
             return
 
-    # Загружаем данные
     await callback.message.edit_text(
         "💎 <b>VIP Аналитика</b>\n\nЗагружаю расширенные данные...",
         parse_mode=ParseMode.HTML,
@@ -506,35 +497,21 @@ async def vip_analysis_handler(callback: CallbackQuery) -> None:
             analyzer = SignalAnalyzer(asset=asset, expiry="5m")
             result = analyzer.analyze(df)
 
-            # AI прогноз
             prob_up = ai_predictor.predict(result.indicators) * 100
             ai_dir = ai_predictor.get_ai_direction(result.indicators)
 
-            ai_icon = {
-                "UP": "🟢", "DOWN": "🔴", None: "⚪",
-            }.get(ai_dir, "⚪")
+            ai_icon = {"UP": "🟢", "DOWN": "🔴", None: "⚪"}.get(ai_dir, "⚪")
 
-            # Уровни S/R (приблизительно)
             recent_high = float(high.tail(20).max())
             recent_low = float(low.tail(20).min())
             mid = (recent_high + recent_low) / 2
 
-            adx_val = "—"
-            try:
-                import pandas_ta as ta
-                adx = ta.adx(high, low, close, length=14)
-                if adx is not None and not adx.empty:
-                    adx_val = f"{float(adx.iloc[-1, 0]):.1f}"
-            except Exception:
-                pass
-
             lines.append(
                 f"<b>{asset}</b>\n"
-                f"📈 AI прогноз: {ai_icon} {ai_dir or 'Нейтрально'} "
+                f"AI прогноз: {ai_icon} {ai_dir or 'Нейтрально'} "
                 f"(P(UP)={prob_up:.1f}%)\n"
-                f"📊 ADX: {adx_val} | "
                 f"Confidence: {(result.confidence*100):.1f}%\n"
-                f"🔝 S/R: {recent_low:.5f} / {mid:.5f} / {recent_high:.5f}\n"
+                f"S/R: {recent_low:.5f} / {mid:.5f} / {recent_high:.5f}\n"
             )
 
         await callback.message.edit_text(
@@ -546,7 +523,7 @@ async def vip_analysis_handler(callback: CallbackQuery) -> None:
     except Exception as exc:
         logger.exception("VIP ошибка: %s", exc)
         await callback.message.edit_text(
-            f"❌ Ошибка: {exc}", parse_mode=ParseMode.HTML,
+            f"Ошибка: {exc}", parse_mode=ParseMode.HTML,
             reply_markup=back_to_main_kb(),
         )
 
@@ -578,9 +555,9 @@ async def set_timeframe(callback: CallbackQuery) -> None:
 async def timeframe_selected(callback: CallbackQuery) -> None:
     tf = callback.data.split(":")[1]
     names = {"1m": "1 минута", "3m": "3 минуты", "5m": "5 минут"}
-    await callback.answer(f"✅ Таймфрейм: {names.get(tf, tf)}", show_alert=True)
+    await callback.answer(f"Таймфрейм: {names.get(tf, tf)}", show_alert=True)
     await callback.message.edit_text(
-        f"✅ Таймфрейм: <b>{names.get(tf, tf)}</b>",
+        f"Таймфрейм: <b>{names.get(tf, tf)}</b>",
         parse_mode=ParseMode.HTML, reply_markup=settings_kb(),
     )
 
@@ -597,7 +574,7 @@ async def favorite_assets(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "toggle_notifications")
 async def toggle_notifications(callback: CallbackQuery) -> None:
-    await callback.answer("🔔 Заглушка", show_alert=True)
+    await callback.answer("Заглушка", show_alert=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -608,7 +585,7 @@ async def toggle_notifications(callback: CallbackQuery) -> None:
 async def referrals_menu(callback: CallbackQuery) -> None:
     tg_id = callback.from_user.id
 
-    async with get_session() as session:
+    async with async_session_factory() as session:
         service = UserService(session)
         user = await service.get_by_telegram_id(tg_id)
         if not user:
@@ -642,7 +619,6 @@ async def trade_result_callback(callback: CallbackQuery) -> None:
         return
 
     direction, asset = parts[1], parts[2]
-    tg_id = callback.from_user.id
 
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -652,10 +628,10 @@ async def trade_result_callback(callback: CallbackQuery) -> None:
         "Сколько заработал?",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Прибыль +80%", callback_data=f"trade_win:80:{asset}")],
-            [InlineKeyboardButton(text="✅ Прибыль +60%", callback_data=f"trade_win:60:{asset}")],
-            [InlineKeyboardButton(text="❌ Убыток", callback_data=f"trade_loss:{asset}")],
-            [InlineKeyboardButton(text="⬅️ Пропустить", callback_data="back_to_main")],
+            [InlineKeyboardButton(text="Прибыль +80%", callback_data=f"trade_win:80:{asset}")],
+            [InlineKeyboardButton(text="Прибыль +60%", callback_data=f"trade_win:60:{asset}")],
+            [InlineKeyboardButton(text="Убыток", callback_data=f"trade_loss:{asset}")],
+            [InlineKeyboardButton(text="Пропустить", callback_data="back_to_main")],
         ]),
     )
     await callback.answer()
@@ -668,25 +644,22 @@ async def trade_win(callback: CallbackQuery) -> None:
     asset = parts[2]
 
     await callback.message.edit_text(
-        f"✅ <b>Отлично!</b> +{profit_pct}% на {asset}\n\n"
-        "Продолжай в том же духе! 🚀",
+        f"Отлично! +{profit_pct}% на {asset}\n\nПродолжай!",
         parse_mode=ParseMode.HTML,
         reply_markup=back_to_main_kb(),
     )
-    await callback.answer("✅ Записал прибыль", show_alert=True)
+    await callback.answer("Записал прибыль", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("trade_loss:"))
 async def trade_loss(callback: CallbackQuery) -> None:
     asset = callback.data.split(":")[1]
     await callback.message.edit_text(
-        f"❌ <b>Не повезло</b> на {asset}\n\n"
-        "Анализируй ошибки и пробуй снова. "
-        "Сигналы бота — это вероятность, не гарантия.",
+        f"Не повезло на {asset}\n\nАнализируй ошибки и пробуй снова.",
         parse_mode=ParseMode.HTML,
         reply_markup=back_to_main_kb(),
     )
-    await callback.answer("❌ Записал убыток", show_alert=True)
+    await callback.answer("Записал убыток", show_alert=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -695,4 +668,4 @@ async def trade_loss(callback: CallbackQuery) -> None:
 
 @router.callback_query()
 async def unknown_callback(callback: CallbackQuery) -> None:
-    await callback.answer("⚠️ Команда не распознана", show_alert=False)
+    await callback.answer("Команда не распознана", show_alert=False)
