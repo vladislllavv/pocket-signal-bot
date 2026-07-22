@@ -52,6 +52,7 @@ async def main() -> None:
 
     dp.include_router(main_router)
     dp.include_router(premium_router)
+    dp.include_router(admin_router)
     logger.info("Роутеры подключены")
 
     scheduler = SignalScheduler()
