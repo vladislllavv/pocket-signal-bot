@@ -58,8 +58,6 @@ def win_loss_chart(wins: int, losses: int, pending: int) -> io.BytesIO:
     if not sizes:
         ax.text(0.5, 0.5, "No data", ha="center", va="center",
                 fontsize=16, color=TEXT_COLOR, transform=ax.transAxes)
-        ax.set_xlim(-1, 1)
-        ax.set_ylim(-1, 1)
     else:
         wedges, texts, autotexts = ax.pie(
             sizes, labels=labels, colors=colors,
@@ -79,8 +77,7 @@ def win_loss_chart(wins: int, losses: int, pending: int) -> io.BytesIO:
         ax.text(0, 0, f"{total}\ntrades", ha="center", va="center",
                 fontsize=14, color=TEXT_COLOR, fontweight="bold")
 
-    ax.set_title("Trade Statistics", fontsize=14, color=TEXT_COLOR,
-                 fontweight="bold", pad=20)
+    ax.set_title("Trade Statistics", fontsize=14, color=TEXT_COLOR, fontweight="bold", pad=20)
 
     buf = _fig_to_buffer(fig)
     plt.close(fig)
@@ -117,12 +114,93 @@ def win_rate_gauge(win_rate: float) -> io.BytesIO:
             fontsize=18, color="white", fontweight="bold")
     ax.text(-0.9, -0.2, "0%", fontsize=9, color=TEXT_COLOR, ha="center")
     ax.text(0.9, -0.2, "100%", fontsize=9, color=TEXT_COLOR, ha="center")
-    ax.text(0, -0.35, "Win Rate", fontsize=12, color=TEXT_COLOR,
-            ha="center", fontweight="bold")
+    ax.text(0, -0.35, "Win Rate", fontsize=12, color=TEXT_COLOR, ha="center", fontweight="bold")
 
     ax.set_xlim(-1.1, 1.1)
     ax.set_ylim(-0.4, 1.1)
     ax.axis("off")
+
+    buf = _fig_to_buffer(fig)
+    plt.close(fig)
+    return buf
+
+
+def pnl_chart(trades: list[dict[str, Any]]) -> io.BytesIO:
+    """График PnL (доходности)."""
+    _setup_style()
+    fig, ax = plt.subplots(figsize=(10, 5), facecolor=BG_COLOR)
+    ax.set_facecolor(BG_COLOR)
+
+    if not trades:
+        ax.text(0.5, 0.5, "No data", ha="center", va="center",
+                fontsize=14, color=TEXT_COLOR, transform=ax.transAxes)
+    else:
+        cumulative = 0
+        pnl_values = []
+        trade_indices = []
+
+        for i, trade in enumerate(trades):
+            cumulative += trade.get("profit", 0)
+            pnl_values.append(cumulative)
+            trade_indices.append(i)
+
+        color = UP_COLOR if pnl_values[-1] >= 0 else DOWN_COLOR
+
+        ax.fill_between(trade_indices, 0, pnl_values, color=color, alpha=0.15)
+        ax.plot(trade_indices, pnl_values, color=color, linewidth=2, marker="o", markersize=3)
+
+        ax.set_xlabel("Trade #", fontsize=11, color=TEXT_COLOR)
+        ax.set_ylabel("PnL ($)", fontsize=11, color=TEXT_COLOR)
+        ax.set_title("PnL Curve", fontsize=14, color=TEXT_COLOR, fontweight="bold")
+        ax.axhline(y=0, color=GRID_COLOR, linewidth=1, linestyle="--")
+        ax.tick_params(colors=TEXT_COLOR)
+
+    ax.grid(True, alpha=0.1, color=GRID_COLOR)
+
+    buf = _fig_to_buffer(fig)
+    plt.close(fig)
+    return buf
+
+
+def signals_by_day_chart(daily_data: dict[str, dict[str, int]]) -> io.BytesIO:
+    """График сигналов по дням."""
+    _setup_style()
+    fig, ax = plt.subplots(figsize=(10, 5), facecolor=BG_COLOR)
+    ax.set_facecolor(BG_COLOR)
+
+    if not daily_data:
+        ax.text(0.5, 0.5, "No data", ha="center", va="center",
+                fontsize=14, color=TEXT_COLOR, transform=ax.transAxes)
+    else:
+        dates = list(daily_data.keys())
+        x = np.arange(len(dates))
+        width = 0.35
+
+        wins = [daily_data[d].get("win", 0) for d in dates]
+        losses = [daily_data[d].get("loss", 0) for d in dates]
+
+        bars1 = ax.bar(x - width/2, wins, width, label="Profit", color=UP_COLOR, alpha=0.85)
+        bars2 = ax.bar(x + width/2, losses, width, label="Loss", color=DOWN_COLOR, alpha=0.85)
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(dates, rotation=45, ha="right", fontsize=9, color=TEXT_COLOR)
+        ax.set_ylabel("Count", fontsize=11, color=TEXT_COLOR)
+        ax.set_title("Signals by Day", fontsize=14, color=TEXT_COLOR, fontweight="bold")
+        ax.legend(facecolor=BG_COLOR, edgecolor=ACCENT_COLOR, labelcolor=TEXT_COLOR)
+        ax.tick_params(colors=TEXT_COLOR)
+
+        for bar in bars1:
+            height = bar.get_height()
+            if height > 0:
+                ax.text(bar.get_x() + bar.get_width()/2., height + 0.1,
+                        f"{int(height)}", ha="center", va="bottom", fontsize=8, color=UP_COLOR)
+        for bar in bars2:
+            height = bar.get_height()
+            if height > 0:
+                ax.text(bar.get_x() + bar.get_width()/2., height + 0.1,
+                        f"{int(height)}", ha="center", va="bottom", fontsize=8, color=DOWN_COLOR)
+
+    ax.grid(True, alpha=0.1, color=GRID_COLOR)
 
     buf = _fig_to_buffer(fig)
     plt.close(fig)
