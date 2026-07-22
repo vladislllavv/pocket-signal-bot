@@ -31,15 +31,9 @@ async_session_factory = async_sessionmaker(
 )
 
 
-async def get_session() -> AsyncSession:  # type: ignore
-    """Генератор сессии для DI в aiogram."""
-    async with async_session_factory() as session:
-        yield session
-
-
 async def init_db() -> None:
     """Создаёт таблицы при первом запуске."""
-    from app.db.models import (  # noqa: F401 — регистрируем модели
+    from app.db.models import (  # noqa: F401
         User,
         Signal,
         Subscription,
