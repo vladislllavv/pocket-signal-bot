@@ -8,7 +8,7 @@ from aiogram.filters import Command
 from aiogram.types import Message
 from sqlalchemy import select
 
-from app.db.base import get_session
+from app.db.base import async_session_factory
 from app.db.models import User
 from app.services.user_service import UserService
 
@@ -45,7 +45,7 @@ async def cmd_add_premium(message: Message) -> None:
 
     target = args[2]
     try:
-        async with get_session() as session:
+        async with async_session_factory() as session:
             service = UserService(session)
             if target.startswith("@"):
                 result = await session.execute(
@@ -72,7 +72,7 @@ async def cmd_add_premium(message: Message) -> None:
 @router.message(Command("mypremium"))
 async def cmd_my_premium(message: Message) -> None:
     tg_id = message.from_user.id
-    async with get_session() as session:
+    async with async_session_factory() as session:
         service = UserService(session)
         user = await service.get_by_telegram_id(tg_id)
 
