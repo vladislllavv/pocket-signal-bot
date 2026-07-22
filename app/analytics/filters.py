@@ -1,5 +1,6 @@
 """
 Фильтры для отсеивания ложных сигналов и шума.
+Без pandas-ta — только numpy/pandas.
 """
 
 from __future__ import annotations
@@ -16,13 +17,8 @@ def volatility_filter(
 ) -> bool:
     """
     Фильтр волатильности.
-    Возвращает True, если волатильность достаточна для торговли.
-
-    Идея: если ATR / цена < min_atr_ratio — рынок во флэте,
-    сигналы не надёжны.
-
-    min_atr_ratio = 0.001 означает, что ATR должен быть не менее 0.1% от цены.
-    Для BTC это ~$1-2, для мелких пар можно увеличить.
+    True = волатильность достаточна для торговли.
+    False = рынок во флэте, сигналы не генерируем.
     """
     if atr_value is None or len(close) < 2:
         return False
@@ -38,8 +34,7 @@ def volatility_filter(
 def spread_filter(bid: float, ask: float, max_spread_pct: float = 0.005) -> bool:
     """
     Фильтр спреда.
-    Возвращает True, если спред приемлем для торговли.
-    max_spread_pct = 0.5% по умолчанию.
+    True = спред приемлем.
     """
     if bid <= 0 or ask <= 0:
         return False
@@ -54,8 +49,7 @@ def volume_filter(
 ) -> bool:
     """
     Фильтр объёмов.
-    Возвращает True, если текущий объём > min_volume_ratio от среднего.
-    Низкий объём = низкая ликвидность = ложные движения.
+    True = объём достаточен (не ниже 50% от среднего).
     """
     if len(volume) < volume_ma_period + 1:
         return False
@@ -71,25 +65,24 @@ def volume_filter(
 
 def trend_strength_filter(
     close: pd.Series,
-    adx_period: int = 14,
-    min_adx: float = 20.0,
+    period: int = 20,
+    min_strength: float = 0.005,
 ) -> bool:
     """
-    Фильтр силы тренда через ADX (если доступен).
-    ADX < 20 — рынок без тренда, сигналы не надёжны.
+    Фильтр силы тренда через наклон SMA.
+    True = тренд есть. False = флэт.
     """
-    import pandas_ta as ta
-
-    if len(close) < adx_period * 2:
-        return True  # пропускаем, если данных мало
-
-    # ADX требует high, low, close. Используем close как high/low (приближение)
-    adx = ta.adx(close, close, close, length=adx_period)
-    if adx is None or adx.empty:
+    if len(close) < period:
         return True
 
-    adx_val = float(adx.iloc[-1, 0])
-    return adx_val >= min_adx
+    sma_short = close.tail(period).mean()
+    sma_long = close.tail(period * 2).mean() if len(close) >= period * 2 else close.mean()
+
+    if sma_long == 0:
+        return True
+
+    slope = abs(sma_short - sma_long) / sma_long
+    return slope >= min_strength
 
 
 def confluence_filter(
@@ -99,8 +92,7 @@ def confluence_filter(
 ) -> bool:
     """
     Фильтр конъюнктуры (confluence).
-    Возвращает True, если доля индикаторов, подтверждающих сигнал,
-    достаточна.
+    True = достаточно индикаторов подтверждают сигнал.
     """
     if total_indicators == 0:
         return False
