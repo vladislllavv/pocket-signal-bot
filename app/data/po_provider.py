@@ -62,10 +62,6 @@ class POProvider:
                 ping_interval=None,
                 close_timeout=15,
                 max_size=10*1024*1024,
-                extra_headers={
-                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-                    "Origin": "https://pocketoption.com",
-                },
             )
 
             logger.info("✅ WebSocket открыт, чтение приветствия...")
