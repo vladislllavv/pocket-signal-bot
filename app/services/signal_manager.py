@@ -1,13 +1,13 @@
 """
 SignalManager — управление жизненным циклом сигналов.
 Генерация, рассылка, сохранение в БД.
+АВТОМАТИЧЕСКИЙ ЦИКЛ — без нажатия кнопок.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.analytics.analyzer import SignalAnalyzer, SignalResult
 from app.bot.messages import format_signal_message
 from app.config import config
-from app.data.market_data import DEFAULT_ASSETS, MarketDataAggregator
+from app.data.po_provider import POProvider, ASSETS as DEFAULT_ASSETS
 from app.db.models import Signal, User
 from app.services.user_service import UserService
 
@@ -28,6 +28,9 @@ class SignalManager:
     Менеджер сигналов.
     Запускает цикл анализа, сохраняет сигналы в БД
     и отправляет их пользователям через Telegram.
+
+    Работает АВТОМАТИЧЕСКИ каждые 3 минуты.
+    Не требует нажатия кнопок!
     """
 
     def __init__(
@@ -37,27 +40,36 @@ class SignalManager:
     ) -> None:
         self.session_factory = session_factory
         self.bot = bot_instance
-        self.aggregator = MarketDataAggregator()
+        # Используем Yahoo Finance напрямую — надёжно и бесплатно
+        self.provider = POProvider()
         self._running = False
 
     async def start_loop(self) -> None:
         """
         Запускает бесконечный цикл анализа рынков.
-        Каждые SIGNAL_CHECK_INTERVAL_SEC секунд проверяет
-        все активы и рассылает сигналы.
+        Каждые 3 минуты проверяет все активы и рассылает сигналы.
         """
         self._running = True
         logger.info(
-            "SignalManager: запущен цикл (интервал=%dс)",
+            "🚀 SignalManager: АВТО-ЦИКЛ запущен (интервал=%dс = %d мин)",
             config.SIGNAL_CHECK_INTERVAL_SEC,
+            config.SIGNAL_CHECK_INTERVAL_SEC // 60,
         )
+        logger.info("📡 Использую Yahoo Finance — как все топ-сигнальные боты")
+
+        # Ждём 10 секунд при старте, чтобы бот успел инициализироваться
+        await asyncio.sleep(10)
 
         while self._running:
             try:
                 await self._analysis_cycle()
             except Exception as exc:
-                logger.exception("Ошибка в цикле анализа: %s", exc)
+                logger.exception("💥 Ошибка в цикле анализа: %s", exc)
 
+            logger.info(
+                "⏳ Следующая проверка через %d сек...",
+                config.SIGNAL_CHECK_INTERVAL_SEC,
+            )
             await asyncio.sleep(config.SIGNAL_CHECK_INTERVAL_SEC)
 
         logger.info("SignalManager: цикл завершён")
@@ -65,57 +77,86 @@ class SignalManager:
     async def stop_loop(self) -> None:
         """Останавливает цикл анализа."""
         self._running = False
-        await self.aggregator.close()
+        await self.provider.close()
         logger.info("SignalManager: остановлен")
 
     async def _analysis_cycle(self) -> None:
         """Один цикл анализа — сканирование всех активов."""
-        logger.debug("SignalManager: начало цикла анализа")
+        logger.debug("🔍 SignalManager: начало цикла анализа")
 
-        # 1. Получаем данные
-        data_map = await self.aggregator.fetch_all(
+        # 1. Получаем данные через Yahoo Finance
+        data_map = await self.provider.fetch_all(
             assets=DEFAULT_ASSETS,
             timeframe="1m",
             limit=100,
         )
 
         if not data_map:
-            logger.warning("Нет данных для анализа")
+            logger.warning("⚠️ Нет данных для анализа (Yahoo Finance не вернул данные)")
             return
+
+        logger.info(
+            "📊 Получены данные: %d активов",
+            len(data_map),
+        )
 
         # 2. Анализируем каждый актив
         valid_signals: list[tuple[str, SignalResult]] = []
         for asset, df in data_map.items():
-            analyzer = SignalAnalyzer(asset=asset, expiry="3m")
-            result = analyzer.analyze(df)
-            if result.is_valid:
-                valid_signals.append((asset, result))
+            try:
+                analyzer = SignalAnalyzer(
+                    asset=asset,
+                    expiry="3m",
+                    min_confluence=config.MIN_CONFLUENCE_SCORE,
+                )
+                result = analyzer.analyze(df)
+                if result.is_valid:
+                    valid_signals.append((asset, result))
+                    logger.info(
+                        "✅ СИГНАЛ %s %s (conf=%.1f%%, score=%.2f)",
+                        asset, result.direction,
+                        result.confidence * 100, result.confluence_score,
+                    )
+                else:
+                    logger.debug(
+                        "➖ %s: нет сигнала (%s)", asset, result.reason
+                    )
+            except Exception as exc:
+                logger.error("Ошибка анализа %s: %s", asset, exc)
 
         if not valid_signals:
-            logger.debug("Нет валидных сигналов в этом цикле")
+            logger.info("📭 Нет валидных сигналов в этом цикле")
             return
 
         # 3. Сохраняем сигналы и рассылаем
         async with self.session_factory() as session:
             user_service = UserService(session)
 
-            # Получаем всех активных пользователей
+            # Получаем ВСЕХ активных пользователей
             users_result = await session.execute(
                 select(User).where(User.is_active == True)  # noqa: E712
             )
             users = users_result.scalars().all()
 
-            for asset, signal_result in valid_signals:
-                logger.info(
-                    "Сигнал %s %s (conf=%.2f) — рассылка %d пользователям",
-                    asset, signal_result.direction,
-                    signal_result.confidence, len(users),
-                )
+            if not users:
+                logger.info("👤 Нет активных пользователей для рассылки")
+                return
 
+            logger.info(
+                "📨 Рассылаю %d сигналов %d пользователям...",
+                len(valid_signals), len(users),
+            )
+
+            sent_total = 0
+            for asset, signal_result in valid_signals:
                 for user in users:
                     try:
-                        # Проверка лимитов
+                        # Проверка лимитов (бесплатные не превысят лимит)
                         if not await user_service.check_signal_limit(user):
+                            logger.debug(
+                                "Пользователь %d превысил лимит",
+                                user.telegram_id,
+                            )
                             continue
 
                         # Сохраняем сигнал в БД
@@ -141,26 +182,27 @@ class SignalManager:
                         # Инкремент счётчика
                         await user_service.increment_signals_today(user)
 
-                        # Отправка в Telegram
+                        # Отправка в Telegram — АВТОМАТИЧЕСКИ!
                         msg = format_signal_message(signal_result)
                         await self.bot.send_message(
                             chat_id=user.telegram_id,
                             text=msg,
                             parse_mode="HTML",
                         )
+                        sent_total += 1
 
                         # Небольшая задержка между отправками
                         await asyncio.sleep(0.05)
 
                     except Exception as exc:
                         logger.error(
-                            "Ошибка отправки сигнала пользователю %d: %s",
+                            "❌ Ошибка отправки сигнала пользователю %d: %s",
                             user.telegram_id, exc,
                         )
 
                 await session.commit()
 
         logger.info(
-            "SignalManager: цикл завершён, отправлено %d сигналов",
-            len(valid_signals),
+            "✅ SignalManager: цикл завершён, отправлено %d сигналов",
+            sent_total,
         )
