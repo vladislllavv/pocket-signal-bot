@@ -18,11 +18,10 @@ class Config:
     # --- Telegram ---
     BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 
-    # --- Pocket Option WebSocket ---
+    # --- Pocket Option ---
     PO_EMAIL: str = os.getenv("PO_EMAIL", "")
     PO_PASSWORD: str = os.getenv("PO_PASSWORD", "")
     PO_SSID: str = os.getenv("PO_SSID", "")
-    PO_IS_DEMO: bool = os.getenv("PO_IS_DEMO", "true").lower() == "true"
 
     # --- Database ---
     DATABASE_URL: str = os.getenv(
@@ -33,20 +32,20 @@ class Config:
     # --- Лимиты подписок ---
     FREE_SIGNALS_PER_DAY: int = int(os.getenv("FREE_SIGNALS_PER_DAY", "5"))
     PREMIUM_SIGNALS_PER_DAY: int = int(os.getenv("PREMIUM_SIGNALS_PER_DAY", "999"))
-    REFERRAL_BONUS_DAYS: int = 3
+    REFERRAL_BONUS_DAYS: int = 3  # дней Premium за реферала
 
     # --- Аналитика ---
-    MIN_CONFLUENCE_SCORE: float = 0.60
-    SIGNAL_CONFIDENCE_THRESHOLD: float = 0.65
+    MIN_CONFLUENCE_SCORE: float = 0.35       # мин. схождение индикаторов для сигнала
+    SIGNAL_CONFIDENCE_THRESHOLD: float = 0.45  # порог уверенности
 
     # --- Планировщик ---
-    SIGNAL_CHECK_INTERVAL_SEC: int = 60
+    SIGNAL_CHECK_INTERVAL_SEC: int = 180  # проверка каждые 3 минуты
 
     # --- Логирование ---
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
     LOG_FILE: str = os.getenv("LOG_FILE", str(DATA_DIR / "bot.log"))
 
-    # --- Webhook ---
+    # --- Webhook (TradingView) ---
     WEBHOOK_SECRET: str = os.getenv("WEBHOOK_SECRET", "")
     WEBHOOK_PORT: int = int(os.getenv("WEBHOOK_PORT", "8080"))
 
