@@ -1,7 +1,7 @@
 """
 Главный роутер Telegram бота (aiogram 3.x).
 Интегрирует AI, премиум, статистику-чарты и управление лимитами.
-Добавлен обработчик PO сигналов (демо-счёт).
+PO Сигналы работают через Yahoo Finance (как у профессиональных ботов).
 """
 
 from __future__ import annotations
@@ -103,7 +103,11 @@ async def _register_and_welcome(message: Message, referrer_code: str | None = No
         is_premium = False
         limit_info = f"{config.FREE_SIGNALS_PER_DAY} сигналов/день"
 
-    welcome_extended = f"{WELCOME_MESSAGE}\n\n👤 Статус: {'💎 Premium' if is_premium else '🆓 Free'}\n📊 Лимит: {limit_info}"
+    welcome_extended = (
+        f"{WELCOME_MESSAGE}\n\n"
+        f"👤 Статус: {'💎 Premium' if is_premium else '🆓 Free'}\n"
+        f"📊 Лимит: {limit_info}"
+    )
 
     await message.answer(
         welcome_extended, parse_mode=ParseMode.HTML,
@@ -244,11 +248,12 @@ async def market_analysis(callback: CallbackQuery) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 📡 PO Сигналы (демо) — через WebSocket Pocket Option
+# 📡 PO Сигналы — профессиональный анализ рынка
 # ═══════════════════════════════════════════════════════════════════════
 
 @router.callback_query(F.data == "po_signals")
 async def po_signals_handler(callback: CallbackQuery) -> None:
+    """Получить сигналы как у профессиональных торговых ботов."""
     tg_id = callback.from_user.id
 
     async with async_session_factory() as session:
@@ -265,23 +270,12 @@ async def po_signals_handler(callback: CallbackQuery) -> None:
             await callback.answer()
             return
 
-    if not config.PO_SSID:
-        await callback.message.edit_text(
-            "📡 PO Сигналы (демо)\n\n"
-            "❌ SSID не настроен!\n\n"
-            "Для получения сигналов напрямую с Pocket Option:\n"
-            "1. Скачай github.com/A11ksa/API-Pocket-Option\n"
-            "2. pip install .\n"
-            "3. python test1.py (введи email/пароль PO)\n"
-            "4. Скопируй SSID из sessions/session.json\n"
-            "5. Добавь в Railway Variables: PO_SSID",
-            parse_mode=ParseMode.HTML, reply_markup=back_to_main_kb(),
-        )
-        await callback.answer()
-        return
-
     await callback.message.edit_text(
-        "📡 PO Сигналы (демо)\n\nПодключаюсь к Pocket Option...",
+        "📡 <b>Сканирую рынки...</b>\n\n"
+        "📊 Получаю котировки\n"
+        "🧠 Анализирую индикаторы\n"
+        "🤖 AI-усиление сигналов\n\n"
+        "⏳ Пожалуйста, подожди...",
         parse_mode=ParseMode.HTML,
     )
     await callback.answer()
@@ -290,29 +284,17 @@ async def po_signals_handler(callback: CallbackQuery) -> None:
         from app.data.po_provider import POProvider
 
         provider = POProvider()
-        connected = await provider.connect()
-
-        if not connected:
-            await callback.message.edit_text(
-                "❌ Не удалось подключиться к PO. Проверь PO_SSID.",
-                parse_mode=ParseMode.HTML, reply_markup=back_to_main_kb(),
-            )
-            return
+        await provider.connect()
 
         data_map = await provider.fetch_all(limit=100)
-        balance = await provider.get_balance()
 
         if not data_map:
             await callback.message.edit_text(
-                "❌ Нет данных с PO. Возможно SSID истёк.",
+                "❌ Не удалось получить данные.",
                 parse_mode=ParseMode.HTML, reply_markup=back_to_main_kb(),
             )
             await provider.close()
             return
-
-        balance_text = ""
-        if balance:
-            balance_text = f"💰 Баланс: {balance['balance']:.2f} {balance['currency']}\n"
 
         sent_signals = []
         for asset, df in data_map.items():
@@ -335,16 +317,23 @@ async def po_signals_handler(callback: CallbackQuery) -> None:
         await provider.close()
         await callback.message.delete()
 
-        header = f"📡 PO Сигналы (демо)\n{balance_text}Источник: Pocket Option WebSocket\n\n"
+        header = (
+            "📡 <b>Аналитический сигнал</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "📊 Источник: Yahoo Finance\n"
+            f"📈 Активов: {len(data_map)}\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+        )
 
         if not sent_signals:
             await callback.message.answer(
-                header + "✅ Все активы просканированы.\n❌ Нет сигналов.",
-                parse_mode=ParseMode.HTML, reply_markup=main_menu_kb(is_premium=user.is_premium),
+                header + "✅ Все активы проанализированы.\n❌ Сигналов нет.\n\n♻️ Сигналы проверяются каждые 3 минуты.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=main_menu_kb(is_premium=user.is_premium),
             )
         else:
             await callback.message.answer(
-                header + f"🔔 Найдено {len(sent_signals)} сигналов:",
+                header + f"🔔 <b>Найдено: {len(sent_signals)}</b>",
                 parse_mode=ParseMode.HTML,
             )
             for sig in sent_signals:
@@ -354,7 +343,8 @@ async def po_signals_handler(callback: CallbackQuery) -> None:
                     reply_markup=signal_actions_kb(sig.asset, sig.direction, sig.expiry),
                 )
             await callback.message.answer(
-                "✅ Сигналы с реальных котировок PO!",
+                "━━━━━━━━━━━━━━━━━━\n💎 Оформи Premium для безлимита!",
+                parse_mode=ParseMode.HTML,
                 reply_markup=main_menu_kb(is_premium=user.is_premium),
             )
 
@@ -372,7 +362,7 @@ async def po_signals_handler(callback: CallbackQuery) -> None:
                 await session.commit()
 
     except Exception as exc:
-        logger.exception("Ошибка PO сигналов: %s", exc)
+        logger.exception("Ошибка: %s", exc)
         await callback.message.edit_text(
             f"❌ Ошибка: {exc}",
             parse_mode=ParseMode.HTML, reply_markup=back_to_main_kb(),
@@ -460,7 +450,6 @@ async def my_statistics(callback: CallbackQuery) -> None:
         try:
             pie = win_loss_chart(stats["wins"], stats["losses"], stats["pending"])
             await callback.message.answer_photo(BufferedInputFile(pie.read(), filename="winloss.png"), caption="Соотношение сделок")
-
             gauge = win_rate_gauge(stats["win_rate"])
             await callback.message.answer_photo(BufferedInputFile(gauge.read(), filename="winrate.png"), caption="Процент успешных сделок")
         except Exception as exc:
